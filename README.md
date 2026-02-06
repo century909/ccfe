@@ -1,101 +1,24 @@
-# Sistema de Facturación Electrónica para Paraguay (Prototipo)
+# Ficha de Proyecto: CCFE (Sistema de Facturación Electrónica - Paraguay)
 
-Este proyecto es una aplicación web full-stack diseñada para la emisión de facturas electrónicas en Paraguay. Permite la gestión de clientes, perfiles de empresa y la generación de una representación gráfica (KUDE) de la factura en formato PDF.
+## 🌟 Resumen Ejecutivo
+Prototipo avanzado de un sistema de facturación electrónica adaptado a la normativa paraguaya (SIFEN). La aplicación permite la gestión integral de emisores y clientes, garantizando cálculos fiscales precisos y la generación de documentos legales en formato digital.
 
-## Características Implementadas
+## 🛠️ Stack Tecnológico
+- **Backend:** FastAPI (Python) - Seleccionado por su alto rendimiento y validación de datos automática.
+- **Frontend:** React + TypeScript + Bootstrap - Interfaz dinámica, segura y responsiva.
+- **Generación de Documentos:** ReportLab (Python) para la creación de PDFs dinámicos.
+- **Persistencia:** Estructura de datos optimizada en JSON y CSV para máxima agilidad.
 
-- **Backend:**
-  - API RESTful construida con **FastAPI** (Python).
-  - **Gestión de Perfil de Empresa:** Permite guardar y recuperar los datos de la empresa emisora (guardado en `company_profile.json`).
-  - **Gestión de Clientes:** Permite registrar nuevos clientes y obtener la lista de clientes existentes (guardado en `clients.csv`).
-  - **Generación de Facturas:**
-    - Endpoint para recibir datos de la factura.
-    - **Generación de KUDE (PDF):** Crea una representación gráfica de la factura en formato PDF utilizando la librería `reportlab`. El diseño está basado en un KUDE real.
-    - **Cálculo de IVA Detallado:** Calcula el desglose del IVA (10%, 5%, Exenta) basado en los ítems de la factura.
-    - **Registro de Facturas:** Guarda un registro de cada factura emitida en `invoices.csv`.
-  - **Simulación de SIFEN y Email:** Contiene funciones placeholder para la integración con SIFEN y el envío de correos, listas para ser implementadas.
+## 🚀 Funcionalidades Clave
+- **Generación de KuDE (PDF):** Creación automática de la Representación Gráfica de la Factura Electrónica, incluyendo placeholders para códigos CDC y QR conforme a SIFEN.
+- **Motor de Cálculo Fiscal:** Desglose automático y preciso de IVA (10%, 5% y Exenta) basado en los ítems de la factura.
+- **Gestión de Emisor (Timbrado):** Configuración completa del perfil de empresa, incluyendo datos de timbrado y actividades económicas.
+- **Módulo de Clientes:** Base de datos con búsqueda inteligente y autocompletado por RUC para agilizar la emisión.
+- **API RESTful:** Arquitectura limpia con endpoints validados para integración con sistemas externos.
 
-- **Frontend:**
-  - Aplicación de una sola página (SPA) construida con **React** y **TypeScript**.
-  - **Diseño Responsivo:** Utiliza **Bootstrap** para una interfaz limpia y adaptable.
-  - **Formulario de Facturación:**
-    - Formulario dinámico para añadir múltiples ítems.
-    - Selección de tasa de IVA (10%, 5%, Exenta) por ítem.
-    - Cálculo de totales en tiempo real.
-  - **Gestión de Clientes:**
-    - Formulario para registrar nuevos clientes.
-    - **Autocompletado:** Campo de búsqueda de clientes por RUC que autocompleta los datos en el formulario de facturación.
-  - **Gestión de Perfil de Empresa:** Formulario para que el usuario configure los datos de su empresa.
+## 💡 Desafío Técnico Superado
+**El Problema:** La complejidad de cumplir con el formato visual y los cálculos matemáticos exigidos por la SET (Secretaría de Estado de Tributación) para los documentos electrónicos.
+**La Solución:** Desarrollé un motor de renderizado dinámico utilizando **ReportLab** que traduce objetos de datos complejos en un documento PDF (KuDE) profesional. Implementé una lógica de redondeo y prorrateo de IVA que asegura que los totales coincidan exactamente con las exigencias legales, facilitando la futura transición a una integración real con los servidores de SIFEN.
 
-## Tecnologías Utilizadas
-
-- **Backend:** Python, FastAPI, Uvicorn, ReportLab
-- **Frontend:** React, TypeScript, Bootstrap
-- **Formato de Datos:** JSON, CSV
-
-## Estructura del Proyecto
-
-```
-/
-├── backend/
-│   ├── venv/                   # Entorno virtual de Python
-│   ├── kudes/                  # Directorio donde se guardan los PDFs generados
-│   ├── main.py                 # Lógica principal de la API (FastAPI)
-│   ├── clients.csv             # Base de datos de clientes
-│   ├── invoices.csv            # Registro de facturas emitidas
-│   └── company_profile.json    # Datos de la empresa emisora
-│
-├── frontend/
-│   ├── public/
-│   ├── src/
-│   │   ├── App.tsx             # Componente principal de la aplicación
-│   │   ├── ClientForm.tsx      # Formulario para registrar clientes
-│   │   └── CompanyProfileForm.tsx # Formulario para el perfil de la empresa
-│   ├── package.json
-│   └── ...
-│
-└── README.md                   # Este archivo
-```
-
-## Configuración y Ejecución
-
-### Backend
-
-1.  **Navegar al directorio del backend:**
-    ```bash
-    cd backend
-    ```
-2.  **Activar el entorno virtual:**
-    ```bash
-    source venv/bin/activate
-    ```
-3.  **Iniciar el servidor:**
-    ```bash
-    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-    ```
-    El servidor estará disponible en `http://localhost:8000`.
-
-### Frontend
-
-1.  **Navegar al directorio del frontend:**
-    ```bash
-    cd frontend
-    ```
-2.  **Instalar dependencias (solo la primera vez):**
-    ```bash
-    npm install
-    ```
-3.  **Iniciar el servidor de desarrollo:**
-    ```bash
-    npm start
-    ```
-    La aplicación se abrirá automáticamente en `http://localhost:3000`.
-
-## Endpoints de la API (Resumen)
-
-- `GET /`: Mensaje de bienvenida.
-- `POST /company-profile`: Guarda o actualiza el perfil de la empresa.
-- `GET /company-profile`: Obtiene el perfil de la empresa guardado.
-- `POST /clients`: Registra un nuevo cliente.
-- `GET /clients`: Obtiene la lista de todos los clientes.
-- `POST /invoice`: Crea una nueva factura, genera el KUDE en PDF y la registra.
+---
+*Proyecto desarrollado por Diego Centurión.*
