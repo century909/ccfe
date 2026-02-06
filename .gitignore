@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pdf
+kudes/
+*.csv
+*.json
+.env
+.DS_Store
+node_modules/
+build/
+dist/

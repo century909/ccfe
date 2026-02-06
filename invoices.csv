@@ -1,7 +1,0 @@
-timestamp,invoice_number,client_ruc,client_name,client_email,total_amount,sifen_status,kude_url,email_sent
-2025-11-07T20:25:20.656831,INV-20251107202520,0001-00,Diego Centurion,diegofabianhp@gmail.com,20000.0,SIMULATED_ACCEPTED,http://example.com/kude/invoice_123.pdf,True
-2025-11-07T20:25:34.024189,INV-20251107202534,3194070,Diego Centurion,diegofabianhp@gmail.com,20000.0,SIMULATED_ACCEPTED,http://example.com/kude/invoice_123.pdf,True
-2025-11-07T20:58:19.477701,INV-20251107205819,3194070,Diego Centurion,diegofabianhp@gmail.com,40000.0,SIMULATED_ACCEPTED,kudes/kude_INV-20251107205819.pdf,True
-2025-11-07T21:38:34.661423,INV-20251107213834,3194070,Diego Centurion,diegofabianhp@gmail.com,33333.02,SIMULATED_ACCEPTED,kudes/kude_INV-20251107213834.pdf,True
-2025-11-07T21:51:41.774168,INV-20251107215141,3194070,Diego Centurion,diegofabianhp@gmail.com,22222.0,SIMULATED_ACCEPTED,kudes/kude_INV-20251107215141.pdf,True
-2025-11-07T22:07:51.995008,INV-20251107220751,3194070,Diego Centurion,diegofabianhp@gmail.com,2000000.0,SIMULATED_ACCEPTED,kudes/kude_INV-20251107220751.pdf,True
