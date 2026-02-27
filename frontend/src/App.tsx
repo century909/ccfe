@@ -35,8 +35,21 @@ function App() {
   const [clientList, setClientList] = useState<Client[]>([]);
   const [showClientForm, setShowClientForm] = useState<boolean>(false);
   const [showProfileForm, setShowProfileForm] = useState<boolean>(false); // State for profile form
+  const [oraculoData, setOraculoData] = useState<any>(null); // Datos del Oráculo
 
   // --- Data Fetching ---
+  const fetchOraculo = useCallback(async () => {
+    try {
+      const response = await fetch('http://localhost:8000/oraculo/report');
+      if (response.ok) {
+        const data = await response.json();
+        setOraculoData(data);
+      }
+    } catch (error) {
+      console.error('Error al obtener datos del Oráculo:', error);
+    }
+  }, []);
+
   const fetchClients = useCallback(async () => {
     try {
       const response = await fetch('http://localhost:8000/clients');
@@ -53,7 +66,8 @@ function App() {
 
   useEffect(() => {
     fetchClients();
-  }, [fetchClients]);
+    fetchOraculo();
+  }, [fetchClients, fetchOraculo]);
 
   useEffect(() => {
     const newTotalAmount = items.reduce((sum, item) => sum + item.total_item, 0);
@@ -98,7 +112,11 @@ function App() {
     e.preventDefault();
     setResponseMessage('Processing invoice...');
 
-    const invoiceData: Invoice = { client, items, total_amount: totalAmount };
+    const invoiceData = { 
+      client_ruc: client.ruc, 
+      items, 
+      total_amount: totalAmount 
+    };
 
     try {
       const response = await fetch('http://localhost:8000/invoice', {
@@ -130,6 +148,34 @@ function App() {
 
       {showProfileForm && <CompanyProfileForm />}
       
+      {oraculoData && (
+        <section className="alert alert-info mb-4">
+          <div className="d-flex justify-content-between align-items-center">
+            <h4>🔮 Oráculo de Datos</h4>
+            <span className="badge bg-primary">Periodo: {oraculoData.data.periodo}</span>
+          </div>
+          <div className="row mt-3">
+            <div className="col-md-4">
+              <p className="mb-1"><strong>Débito Fiscal (Ventas):</strong></p>
+              <p className="fs-5">{oraculoData.data.debito_fiscal?.toLocaleString()} PYG</p>
+            </div>
+            <div className="col-md-4">
+              <p className="mb-1"><strong>Crédito Fiscal (Gastos):</strong></p>
+              <p className="fs-5 text-success">-{oraculoData.data.credito_fiscal?.toLocaleString()} PYG</p>
+              <small className="text-muted">({oraculoData.data.cantidad_gastos_sincronizados} facturas sync)</small>
+            </div>
+            <div className="col-md-4 border-start">
+              <p className="mb-1"><strong>IVA Neto Estimado:</strong></p>
+              <p className={`fs-4 fw-bold ${oraculoData.data.iva_neto_estimado > 0 ? 'text-danger' : 'text-success'}`}>
+                {oraculoData.data.iva_neto_estimado?.toLocaleString()} PYG
+              </p>
+            </div>
+          </div>
+          <hr />
+          <p className="mb-0 text-primary"><em>{oraculoData.advice}</em></p>
+        </section>
+      )}
+
       <hr />
 
       <div className="d-flex justify-content-start mb-4">

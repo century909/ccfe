@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:15
+    container_name: ccfe-db
+    restart: always
+    environment:
+      POSTGRES_USER: diego
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mia_secret_2026}
+      POSTGRES_DB: ccfe_oraculo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

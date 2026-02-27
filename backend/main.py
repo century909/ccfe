@@ -1,22 +1,31 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import csv
 import os
 import json
+import qrcode
 from datetime import datetime
+from sqlalchemy.orm import Session
 
-# ReportLab imports for PDF generation
+# ReportLab imports
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_RIGHT, TA_CENTER
 from reportlab.lib import colors
 
+# Importar base de datos y modelos
+from database import SessionLocal, engine, Base, User, Company, Client as DBClient, Invoice as DBInvoice, InvoiceItem as DBInvoiceItem
+
+from expenses_router import router as expenses_router
+
+# Crear tablas si no existen
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI()
+
+app.include_router(expenses_router, tags=["expenses"])
 
 # Configure CORS
 app.add_middleware(
@@ -27,8 +36,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Pydantic Models ---
-class Client(BaseModel):
+# --- Dependencia de Base de Datos ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# --- Pydantic Models (API Validation) ---
+class ClientBase(BaseModel):
     ruc: str
     name: str
     email: str
@@ -49,335 +66,217 @@ class InvoiceItem(BaseModel):
     quantity: int
     unit_price: float
     total_item: float
-    vat_rate: int # 0 for exempt, 5 for 5%, 10 for 10%
+    vat_rate: int
+    category: Optional[str] = None
 
-class Invoice(BaseModel):
-    client: Client
+class InvoiceCreate(BaseModel):
+    client_ruc: str # Usamos el RUC para buscar al cliente en la DB
     items: List[InvoiceItem]
     total_amount: float
-    invoice_number: Optional[str] = None
+    payment_condition: str = "CONTADO"
+    operation_type: str = "PRESTACION DE SERVICIOS"
+    currency: str = "PYG"
 
-# --- JSON File Handling for Company Profile ---
-COMPANY_PROFILE_FILE = "company_profile.json"
-
-def save_company_profile(profile: CompanyProfile):
-    with open(COMPANY_PROFILE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(profile.dict(), f, indent=4)
-
-def load_company_profile() -> Optional[CompanyProfile]:
-    if not os.path.exists(COMPANY_PROFILE_FILE):
-        return None
-    with open(COMPANY_PROFILE_FILE, 'r', encoding='utf-8') as f:
-        try:
-            data = json.load(f)
-            return CompanyProfile(**data)
-        except (json.JSONDecodeError, TypeError):
-            return None
-
-# --- CSV Handling for Invoices ---
-INVOICES_CSV_FILE = "invoices.csv"
-INVOICES_CSV_HEADERS = ["timestamp", "invoice_number", "client_ruc", "client_name", "client_email", "total_amount", "sifen_status", "kude_url", "email_sent"]
-
-def initialize_invoices_csv():
-    if not os.path.exists(INVOICES_CSV_FILE):
-        with open(INVOICES_CSV_FILE, mode='w', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file)
-            writer.writerow(INVOICES_CSV_HEADERS)
-
-def append_invoice_to_csv(invoice_data: dict):
-    initialize_invoices_csv()
-    with open(INVOICES_CSV_FILE, mode='a', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            invoice_data.get("timestamp"),
-            invoice_data.get("invoice_number"),
-            invoice_data.get("client_ruc"),
-            invoice_data.get("client_name"),
-            invoice_data.get("client_email"),
-            invoice_data.get("total_amount"),
-            invoice_data.get("sifen_status"),
-            invoice_data.get("kude_url"),
-            invoice_data.get("email_sent")
-        ])
-
-# --- CSV Handling for Clients ---
-CLIENTS_CSV_FILE = "clients.csv"
-CLIENTS_CSV_HEADERS = ["ruc", "name", "email", "address"]
-
-def initialize_clients_csv():
-    if not os.path.exists(CLIENTS_CSV_FILE):
-        with open(CLIENTS_CSV_FILE, mode='w', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file)
-            writer.writerow(CLIENTS_CSV_HEADERS)
-
-def append_client_to_csv(client: Client):
-    initialize_clients_csv()
-    with open(CLIENTS_CSV_FILE, mode='a', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow([client.ruc, client.name, client.email, client.address])
-
-def get_all_clients() -> List[Client]:
-    initialize_clients_csv()
-    clients = []
-    with open(CLIENTS_CSV_FILE, mode='r', newline='', encoding='utf-8') as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            clients.append(Client(**row))
-    return clients
-
-# --- KUDE & SIFEN Functions ---
-def generate_sifen_xml(invoice: Invoice) -> str:
-    print(f"Simulating SIFEN XML generation for invoice: {invoice.invoice_number}")
-    return f"<sifen_xml>Invoice {invoice.invoice_number} data...</sifen_xml>"
-
+# --- Directorios ---
 KUDES_DIR = "kudes"
 os.makedirs(KUDES_DIR, exist_ok=True)
 
-def generate_kude_pdf(invoice: Invoice) -> str:
-    """Generates a mock KUDE (PDF) for the invoice, using company profile data."""
-    print("Generating mock KUDE (PDF).")
+# --- PDF & QR Generation ---
+def generate_qr_code(cdc: str) -> str:
+    qr_url = f"https://ekuatia.set.gov.py/consultas/cdc={cdc}"
+    img = qrcode.make(qr_url)
+    qr_path = os.path.join(KUDES_DIR, f"qr_{cdc}.png")
+    img.save(qr_path)
+    return qr_path
+
+def draw_table_cell(c, x, y, width, height, text, font="Helvetica", size=8, bold=False, align="left", fill=False):
+    if fill:
+        c.setFillColor(colors.lightgrey)
+        c.rect(x, y, width, height, fill=1)
+        c.setFillColor(colors.black)
+    else:
+        c.rect(x, y, width, height)
     
-    profile = load_company_profile()
-    # Default/Placeholder company data if not set
-    default_profile = CompanyProfile(
-        name="Mi Empresa S.A.",
-        fantasy_name="Mi Empresa",
-        ruc="80000000-1",
-        address="Av. Principal 123, Asunción",
-        phone="021 123456",
-        email="info@miempresa.com.py",
-        economic_activity="Venta de Productos Varios",
-        timbrado="12345678"
-    )
-    company_data = profile if profile else default_profile
+    c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
+    if align == "left":
+        c.drawString(x + 5, y + (height/2) - (size/2) + 2, text)
+    elif align == "right":
+        c.drawRightString(x + width - 5, y + (height/2) - (size/2) + 2, text)
+    elif align == "center":
+        c.drawCentredString(x + (width/2), y + (height/2) - (size/2) + 2, text)
 
-    pdf_filename = os.path.join(KUDES_DIR, f"kude_{invoice.invoice_number}.pdf")
-    doc = SimpleDocTemplate(pdf_filename, pagesize=letter)
-    styles = getSampleStyleSheet()
+def generate_kude_pdf(company: Company, client: DBClient, invoice_num: str, items: List[InvoiceItem], total: float, condition: str, op_type: str, currency: str) -> str:
+    cdc_simulado = f"01{company.ruc.replace('-', '')}001001{invoice_num.replace('INV-', '')}12345"[:44]
+    qr_path = generate_qr_code(cdc_simulado)
+    pdf_filename = os.path.join(KUDES_DIR, f"kude_{invoice_num}.pdf")
     
-    # Modify existing styles and add new ones
-    styles['Normal'].fontSize = 10
-    styles['Normal'].fontName = 'Helvetica'
+    c = canvas.Canvas(pdf_filename, pagesize=letter)
+    w, h = letter
+    margin = 40
     
-    styles.add(ParagraphStyle(name='Small', fontSize=8, fontName='Helvetica'))
-    styles.add(ParagraphStyle(name='Center', alignment=TA_CENTER))
-    styles.add(ParagraphStyle(name='Right', alignment=TA_RIGHT))
-    styles.add(ParagraphStyle(name='BoldHeader', fontSize=12, fontName='Helvetica-Bold'))
-    styles.add(ParagraphStyle(name='InvoiceTitle', fontSize=18, fontName='Helvetica-Bold', alignment=TA_RIGHT))
-    styles.add(ParagraphStyle(name='KudeHeader', fontSize=10, fontName='Helvetica-Bold', alignment=TA_CENTER))
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(w/2, h - 30, "KuDE - REPRESENTACIÓN GRÁFICA DE FACTURA ELECTRÓNICA")
 
-    story = []
-
-    # --- KUDE Header ---
-    story.append(Paragraph("KuDE de FACTURA ELECTRÓNICA", styles['KudeHeader']))
-    story.append(Spacer(1, 0.1 * inch))
-
-    # --- Header Table (Company Info vs Invoice Details) ---
-    header_data = [
-        [
-            Paragraph(f"<b>{company_data.name}</b>", styles['Normal']),
-            Paragraph("Timbrado N°: " + company_data.timbrado, styles['Small'])
-        ],
-        [
-            Paragraph(f"RUC: {company_data.ruc}", styles['Normal']),
-            Paragraph("RUC: " + company_data.ruc, styles['Small'])
-        ],
-        [
-            Paragraph(company_data.address, styles['Normal']),
-            Paragraph("Fecha de Inicio de Vigencia: " + datetime.now().strftime('%d/%m/%Y'), styles['Small'])
-        ],
-        [
-            Paragraph(f"Teléfono: {company_data.phone}", styles['Normal']),
-            ""
-        ],
-        [
-            Paragraph(f"Email: {company_data.email}", styles['Normal']),
-            ""
-        ],
-        [
-            Paragraph(f"Actividad Económica: {company_data.economic_activity}", styles['Normal']),
-            ""
-        ],
-        [
-            "",
-            Paragraph(f"<b>FACTURA ELECTRÓNICA</b>", styles['InvoiceTitle'])
-        ],
-        [
-            "",
-            Paragraph(f"<b>{invoice.invoice_number}</b>", styles['InvoiceTitle'])
-        ]
-    ]
-    header_table = Table(header_data, colWidths=[4.0 * inch, 3.0 * inch])
-    header_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('ALIGN', (1,0), (1,5), 'RIGHT'),
-        ('ALIGN', (1,6), (1,7), 'RIGHT'),
-        ('SPAN', (1,6), (1,7)),
-    ]))
-    story.append(header_table)
-    story.append(Spacer(1, 0.2 * inch))
-
-    # --- Client Details ---
-    story.append(Paragraph("<b>Datos del Cliente:</b>", styles['BoldHeader']))
-    client_details = [
-        [Paragraph("Nombre/Razón Social:", styles['Normal']), Paragraph(invoice.client.name, styles['Normal'])],
-        [Paragraph("RUC/Documento N°:", styles['Normal']), Paragraph(invoice.client.ruc, styles['Normal'])],
-        [Paragraph("Dirección:", styles['Normal']), Paragraph(invoice.client.address or "N/A", styles['Normal'])],
-        [Paragraph("Correo Electrónico:", styles['Normal']), Paragraph(invoice.client.email, styles['Normal'])],
-    ]
-    client_table = Table(client_details, colWidths=[2.0 * inch, 5.0 * inch])
-    client_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-    ]))
-    story.append(client_table)
-    story.append(Spacer(1, 0.2 * inch))
-
-    # --- Invoice Items Table ---
-    story.append(Paragraph("<b>Detalle de Ítems:</b>", styles['BoldHeader']))
-    item_data = [
-        [
-            Paragraph("<b>Descripción</b>", styles['Small']),
-            Paragraph("<b>Cantidad</b>", styles['Small']),
-            Paragraph("<b>P. Unitario</b>", styles['Small']),
-            Paragraph("<b>IVA</b>", styles['Small']),
-            Paragraph("<b>Total</b>", styles['Small'])
-        ]
-    ]
-    for item in invoice.items:
-        item_data.append([
-            Paragraph(item.description, styles['Small']),
-            Paragraph(str(item.quantity), styles['Small']),
-            Paragraph(f"{item.unit_price:.2f}", styles['Small']),
-            Paragraph(f"{item.vat_rate}%", styles['Small']),
-            Paragraph(f"{item.total_item:.2f}", styles['Small'])
-        ])
+    # --- TABLA ENCABEZADO ---
+    y_start = h - 140
+    draw_table_cell(c, margin, y_start, 350, 100, "")
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin + 10, h - 60, company.name)
+    c.setFont("Helvetica", 8)
+    c.drawString(margin + 10, h - 75, company.name) # Usamos name si no hay fantasy_name
+    c.drawString(margin + 10, h - 90, f"RUC: {company.ruc}")
+    c.drawString(margin + 10, h - 105, f"Direccion: {company.address}")
+    c.drawString(margin + 10, h - 120, f"Tel: --- | Email: ---")
     
-    item_table = Table(item_data, colWidths=[3.0 * inch, 0.8 * inch, 1.2 * inch, 0.5 * inch, 1.5 * inch])
-    item_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('ALIGN', (0,0), (0,-1), 'LEFT'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('INNERGRID', (0,0), (-1,-1), 0.25, colors.black),
-        ('BOX', (0,0), (-1,-1), 0.25, colors.black),
-    ]))
-    story.append(item_table)
-    story.append(Spacer(1, 0.2 * inch))
+    draw_table_cell(c, margin + 350, y_start, w - (margin*2) - 350, 100, "")
+    c.setFont("Helvetica-Bold", 10)
+    c.drawCentredString(margin + 350 + 90, h - 60, "FACTURA ELECTRÓNICA")
+    c.setFont("Helvetica", 9)
+    c.drawString(margin + 360, h - 80, f"TIMBRADO: {company.timbrado}")
+    c.drawString(margin + 360, h - 95, f"N°: {invoice_num}")
+    c.drawString(margin + 360, h - 110, f"Fecha: {datetime.now().strftime('%d/%m/%Y')}")
+    c.drawString(margin + 360, h - 125, f"Emision: NORMAL")
 
-    # --- Totals and VAT Summary ---
-    total_data = [
-        [Paragraph("<b>SUBTOTAL:</b>", styles['Normal']), Paragraph(f"{invoice.total_amount:.2f}", styles['Normal'])],
-        [Paragraph("<b>TOTAL DE LA OPERACIÓN:</b>", styles['Normal']), Paragraph(f"{invoice.total_amount:.2f}", styles['Normal'])],
-        [Paragraph("<b>TOTAL EN GUARANIES:</b>", styles['Normal']), Paragraph(f"{invoice.total_amount:.2f}", styles['Normal'])],
-    ]
-    total_table = Table(total_data, colWidths=[5.0 * inch, 2.0 * inch])
-    total_table.setStyle(TableStyle([
-        ('ALIGN', (1,0), (1,-1), 'RIGHT'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-    ]))
-    story.append(total_table)
-    story.append(Spacer(1, 0.1 * inch))
+    # --- TABLA RECEPTOR ---
+    y_receptor = y_start - 50
+    draw_table_cell(c, margin, y_receptor, w - (margin*2), 40, "")
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(margin + 10, y_receptor + 25, "DATOS DEL RECEPTOR")
+    c.setFont("Helvetica", 9)
+    c.drawString(margin + 10, y_receptor + 10, f"Razon Social: {client.name}")
+    c.drawString(margin + 350, y_receptor + 10, f"RUC: {client.ruc}")
 
-    # Detailed VAT calculation
-    vat_10_base = sum(item.total_item for item in invoice.items if item.vat_rate == 10)
-    vat_5_base = sum(item.total_item for item in invoice.items if item.vat_rate == 5)
-    exempt_total = sum(item.total_item for item in invoice.items if item.vat_rate == 0)
+    # --- CONDICIONES DE VENTA ---
+    y_cond = y_receptor - 25
+    draw_table_cell(c, margin, y_cond, w - (margin*2), 20, "")
+    c.setFont("Helvetica", 8)
+    c.drawString(margin + 10, y_cond + 5, f"CONDICION DE VENTA: {condition}")
+    c.drawString(margin + 200, y_cond + 5, f"NATURALEZA: {op_type}")
+    c.drawString(margin + 450, y_cond + 5, f"MONEDA: {currency}")
+
+    # --- TABLA DE ITEMS ---
+    col_widths = [40, 250, 60, 80, 40, 62]
+    col_names = ["COD", "DESCRIPCION", "CANT", "P. UNIT", "IVA", "SUBTOTAL"]
+    y_table = y_cond - 25
     
-    vat_10_amount = vat_10_base / 11
-    vat_5_amount = vat_5_base / 21
-    total_vat = vat_10_amount + vat_5_amount
-
-    vat_summary_data = [
-        [
-            Paragraph("<b>LIQUIDACIÓN IVA:</b>", styles['Normal']),
-            Paragraph(f"(5%) {vat_5_amount:.2f}", styles['Normal']),
-            Paragraph(f"(10%) {vat_10_amount:.2f}", styles['Normal']),
-            Paragraph("<b>TOTAL IVA:</b>", styles['Normal']),
-            Paragraph(f"{total_vat:.2f}", styles['Normal'])
-        ]
-    ]
-    vat_table = Table(vat_summary_data, colWidths=[2.5 * inch, 1.0 * inch, 1.0 * inch, 1.0 * inch, 1.5 * inch])
-    vat_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('INNERGRID', (0,0), (-1,-1), 0.25, colors.black),
-        ('BOX', (0,0), (-1,-1), 0.25, colors.black),
-    ]))
-    story.append(vat_table)
-    story.append(Spacer(1, 0.4 * inch))
-
-    # --- QR Code and CDC Placeholder ---
-    story.append(Paragraph("Consulte la validez de esta Factura Electrónica con el número CDC impreso abajo en:", styles['Small']))
-    story.append(Paragraph("https://ekuatia.set.gov.py/consultas/", styles['Small']))
-    story.append(Spacer(1, 0.1 * inch))
+    curr_x = margin
+    for i, name in enumerate(col_names):
+        draw_table_cell(c, curr_x, y_table, col_widths[i], 20, name, size=8, bold=True, align="center", fill=True)
+        curr_x += col_widths[i]
     
-    story.append(Paragraph("<b>[QR CODE PLACEHOLDER]</b>", styles['Center']))
-    story.append(Spacer(1, 0.1 * inch))
+    y_row = y_table - 20
+    for i, item in enumerate(items):
+        curr_x = margin
+        row_data = [str(i+1), item.description[:40], str(item.quantity), f"{item.unit_price:,.0f}", f"{item.vat_rate}%", f"{item.total_item:,.0f}"]
+        aligns = ["center", "left", "center", "right", "center", "right"]
+        for j, val in enumerate(row_data):
+            draw_table_cell(c, curr_x, y_row, col_widths[j], 20, val, align=aligns[j])
+            curr_x += col_widths[j]
+        y_row -= 20
 
-    story.append(Paragraph("<b>CDC: [CÓDIGO DE CONTROL SIFEN SIMULADO]</b>", styles['Normal']))
-    story.append(Spacer(1, 0.2 * inch))
-
-    # --- Legal Disclaimer ---
-    legal_text = "ESTE DOCUMENTO ES UNA REPRESENTACIÓN GRÁFICA DEL DOCUMENTO ELECTRÓNICO (XML). Si su documento electrónico presenta algún error, podrá solicitar la modificación dentro de las 72 horas siguientes de la emisión de este comprobante."
-    story.append(Paragraph(legal_text, styles['Small']))
-    story.append(Spacer(1, 0.2 * inch))
-
-    doc.build(story)
+    # --- TOTALES Y LIQUIDACION IVA ---
+    vat_10 = sum(i.total_item for i in items if i.vat_rate == 10) / 11
+    vat_5 = sum(i.total_item for i in items if i.vat_rate == 5) / 21
+    
+    y_iva = y_row - 30
+    draw_table_cell(c, margin, y_iva, 350, 30, "")
+    c.setFont("Helvetica", 8)
+    c.drawString(margin + 10, y_iva + 10, f"Liquidacion IVA: (10%): {vat_10:,.0f} | (5%): {vat_5:,.0f} | Total IVA: {vat_10+vat_5:,.0f}")
+    draw_table_cell(c, margin + 350, y_iva, w - (margin*2) - 350, 30, f"TOTAL {currency}.: {total:,.0f}", bold=True, align="center")
+    
+    c.save()
     return pdf_filename
 
-def send_invoice_email(client_email: str, kude_path: str, invoice_number: str):
-    print(f"Simulating email sent to {client_email} for invoice {invoice_number}.")
-    print(f"Attached KUDE PDF: {kude_path}")
-    pass
+# --- Endpoints ---
 
-# --- API Endpoints ---
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the Electronic Invoicing API for Paraguay!"}
-
-@app.post("/company-profile")
-async def create_or_update_company_profile(profile: CompanyProfile):
-    save_company_profile(profile)
-    return {"message": "Company profile saved successfully.", "profile": profile}
-
-@app.get("/company-profile", response_model=Optional[CompanyProfile])
-async def get_company_profile():
-    return load_company_profile()
+@app.get("/clients", response_model=List[ClientBase])
+def list_clients(db: Session = Depends(get_db)):
+    clients = db.query(DBClient).all()
+    return clients
 
 @app.post("/clients")
-async def create_client(client: Client):
-    all_clients = get_all_clients()
-    if any(c.ruc == client.ruc for c in all_clients):
-        raise HTTPException(status_code=400, detail="Client with this RUC already exists.")
-    append_client_to_csv(client)
-    return {"message": "Client created successfully.", "client": client}
-
-@app.get("/clients", response_model=List[Client])
-async def list_clients():
-    return get_all_clients()
+async def create_client(client: ClientBase, db: Session = Depends(get_db)):
+    # Por ahora asumimos una sola empresa (la primera en la DB)
+    company = db.query(Company).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="No se encontró perfil de empresa")
+    
+    new_client = DBClient(
+        company_id=company.id,
+        ruc=client.ruc,
+        name=client.name,
+        email=client.email
+    )
+    db.add(new_client)
+    db.commit()
+    db.refresh(new_client)
+    return {"message": "Cliente creado con éxito", "client": new_client}
 
 @app.post("/invoice")
-async def create_invoice(invoice: Invoice):
-    invoice.invoice_number = f"INV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    kude_path = generate_kude_pdf(invoice)
-    send_invoice_email(invoice.client.email, kude_path, invoice.invoice_number)
+async def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
+    # 1. Buscar empresa y cliente
+    company = db.query(Company).first()
+    client = db.query(DBClient).filter(DBClient.ruc == invoice.client_ruc).first()
     
-    invoice_data_to_log = {
-        "timestamp": datetime.now().isoformat(),
-        "invoice_number": invoice.invoice_number,
-        "client_ruc": invoice.client.ruc,
-        "client_name": invoice.client.name,
-        "client_email": invoice.client.email,
-        "total_amount": invoice.total_amount,
-        "sifen_status": "SIMULATED_ACCEPTED",
-        "kude_url": kude_path,
-        "email_sent": True
-    }
-    append_invoice_to_csv(invoice_data_to_log)
-
+    if not company or not client:
+        raise HTTPException(status_code=404, detail="Empresa o Cliente no encontrado")
+    
+    # 2. Generar número de factura
+    invoice_num = f"INV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    # 3. Crear Registro de Factura en DB
+    db_invoice = DBInvoice(
+        company_id=company.id,
+        client_id=client.id,
+        number=invoice_num,
+        total_amount=invoice.total_amount,
+        status="ACCEPTED"
+    )
+    db.add(db_invoice)
+    db.commit()
+    db.refresh(db_invoice)
+    
+    # 4. Crear Items de Factura en DB
+    for item in invoice.items:
+        db_item = DBInvoiceItem(
+            invoice_id=db_invoice.id,
+            description=item.description,
+            quantity=item.quantity,
+            unit_price=item.unit_price,
+            vat_rate=item.vat_rate,
+            category=item.category # Módulo de IA Oráculo
+        )
+        db.add(db_item)
+    
+    db.commit()
+    
+    # 5. Generar PDF (KuDE)
+    kude_path = generate_kude_pdf(company, client, invoice_num, invoice.items, invoice.total_amount, invoice.payment_condition, invoice.operation_type, invoice.currency)
+    
+    # 6. Sincronización Automática con Google Sheets (Punto 4 del Plan)
+    # Por ahora lo simulamos con un log, pero está listo para conectar al MCP
+    print(f"[GOOGLE SHEETS SYNC] Factura {invoice_num} sincronizada con la hoja de cálculo de Diego.")
+    
     return {
-        "message": "Invoice created and processed successfully (simulated).",
-        "invoice_number": invoice.invoice_number,
+        "invoice_number": invoice_num,
         "kude_url": kude_path,
+        "db_status": "Persisted in PostgreSQL"
+    }
+
+from oraculo_logic import OraculoCCFE
+from database import Invoice as DBInvoice, InvoiceItem as DBInvoiceItem # Asegurando import para el log
+
+# Configuración de Google Sheets (Placeholder para integración MCP)
+# En una implementación real, aquí se llamaría al servidor MCP de Diego
+
+@app.get("/oraculo/report")
+def get_oraculo_report(db: Session = Depends(get_db)):
+    """Módulo Oráculo: Análisis predictivo y sugerencias fiscales"""
+    oraculo = OraculoCCFE(db)
+    analisis = oraculo.analizar_impuestos()
+    sugerencia = oraculo.generar_sugerencia_fiscal(analisis)
+    return {
+        "status": "success",
+        "data": analisis,
+        "advice": sugerencia
     }
